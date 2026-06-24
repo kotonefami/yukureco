@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue"
-import { useRoute, useRouter } from "vue-router"
-import { usePeer } from "@/composables/usePeer"
-import { useMedia } from "@/composables/useMedia"
-import { useRecording } from "@/composables/useRecording"
-import { ProtocolService } from "@/services/ProtocolService"
-import TopBar from "@/components/TopBar.vue"
-import MyMediaPanel from "@/components/MyMediaPanel.vue"
-import ParticipantList from "@/components/ParticipantList.vue"
-import RecordingControl from "@/components/RecordingControl.vue"
-import ConnectingScreen from "@/components/ConnectingScreen.vue"
-import type { ConnectionPhase } from "@/components/ConnectingScreen.vue"
+import { ref, onMounted, onUnmounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { usePeer } from '@/composables/usePeer'
+import { useMedia } from '@/composables/useMedia'
+import { useRecording } from '@/composables/useRecording'
+import { ProtocolService } from '@/services/ProtocolService'
+import TopBar from '@/components/TopBar.vue'
+import BottomControls from '@/components/BottomControls.vue'
+import MyMediaPanel from '@/components/MyMediaPanel.vue'
+import ParticipantList from '@/components/ParticipantList.vue'
+import ConnectingScreen from '@/components/ConnectingScreen.vue'
+import type { ConnectionPhase } from '@/components/ConnectingScreen.vue'
+import { RecordingState } from '@/types/media'
+import type { Participant } from '@/types/peer'
 
 const route = useRoute()
 const router = useRouter()
@@ -23,6 +25,11 @@ const {
     broadcast,
     createRoom,
     joinRoom,
+    sendTo,
+    onDataMessage,
+    offDataMessage,
+    onParticipantJoin,
+    offParticipantJoin,
 } = usePeer()
 
 const {
@@ -41,48 +48,78 @@ const {
     recordingState,
     startRecording: startLocalRecording,
     stopRecording: stopLocalRecording,
-    reset: resetRecording,
+    setRecordingState,
+    handleRecordStart,
+    handleRecordStop,
 } = useRecording()
 
 const roomIdString = route.params.id as string
-const isHostRole = route.query.role === "host"
-const connectionPhase = ref<ConnectionPhase>(
-    route.query.role ? "connecting" : "pending",
-)
-const errorMessage = ref("")
+const isHostRole = route.query.role === 'host' // TODO: この判別方法は問題がある
+const connectionPhase = ref<ConnectionPhase>(route.query.role ? 'connecting' : 'pending')
+const errorMessage = ref('')
 
 onMounted(async () => {
     if (isHostRole) {
         try {
             await createRoom(roomIdString)
-            connectionPhase.value = "connected"
+            connectionPhase.value = 'connected'
         } catch (e) {
-            connectionPhase.value = "error"
+            connectionPhase.value = 'error'
             errorMessage.value = e instanceof Error ? e.message : String(e)
-            setTimeout(() => router.push("/"), 5000)
+            setTimeout(() => router.push('/'), 5000)
         }
-    } else if (route.query.role === "participant") {
+    } else if (route.query.role === 'participant') {
         const name = route.query.name as string
         try {
             await joinRoom(`yukureco-room-${roomIdString}`, name)
-            connectionPhase.value = "connected"
+            connectionPhase.value = 'connected'
         } catch (e) {
-            connectionPhase.value = "error"
+            connectionPhase.value = 'error'
             errorMessage.value = e instanceof Error ? e.message : String(e)
-            setTimeout(() => router.push("/"), 5000)
+            setTimeout(() => router.push('/'), 5000)
         }
+    }
+
+    // 全参加者共通: DataChannel メッセージのルーティング
+    if (connectionPhase.value === 'connected') {
+        const dataHandler = (data: unknown) => {
+            handleRecordStart(data)
+            handleRecordStop(data)
+        }
+        onDataMessage(dataHandler)
+
+        // ホストのみ: 新規参加者に録画状態を通知
+        let joinHandler: ((participant: Participant) => void) | undefined
+        if (isHostRole) {
+            joinHandler = (participant: Participant) => {
+                if (recordingState.value === RecordingState.RECORDING) {
+                    const message = protocolService.createRecordStartMessage(
+                        selfInfo.value?.peerId ?? 'unknown',
+                    )
+                    sendTo(participant.peerId, protocolService.serialize(message))
+                }
+            }
+            onParticipantJoin(joinHandler)
+        }
+
+        onUnmounted(() => {
+            offDataMessage(dataHandler)
+            if (isHostRole && joinHandler) {
+                offParticipantJoin(joinHandler)
+            }
+        })
     }
 })
 
 async function handleConnect(displayName: string): Promise<void> {
-    connectionPhase.value = "connecting"
+    connectionPhase.value = 'connecting'
     try {
         await joinRoom(`yukureco-room-${roomIdString}`, displayName)
-        connectionPhase.value = "connected"
+        connectionPhase.value = 'connected'
     } catch (e) {
-        connectionPhase.value = "error"
+        connectionPhase.value = 'error'
         errorMessage.value = e instanceof Error ? e.message : String(e)
-        setTimeout(() => router.push("/"), 5000)
+        setTimeout(() => router.push('/'), 5000)
     }
 }
 
@@ -96,11 +133,13 @@ function handleRemoveMic(deviceId: string): void {
 }
 
 function handleStartRecording(): void {
-    const message = protocolService.createRecordStartMessage(
-        selfInfo.value?.peerId ?? "unknown",
-    )
+    const message = protocolService.createRecordStartMessage(selfInfo.value?.peerId ?? 'unknown')
     broadcast(protocolService.serialize(message))
 
+    // ルームの録画状態を常に設定（画面共有の有無にかかわらず）
+    setRecordingState(RecordingState.RECORDING)
+
+    // 自分が画面を共有している場合のみローカル録画を開始
     if (screenStream.value) {
         const micMap = new Map<string, { stream: MediaStream; label: string }>()
         for (const [deviceId, info] of activeMics.value) {
@@ -111,62 +150,35 @@ function handleStartRecording(): void {
 }
 
 async function handleStopRecording(): Promise<void> {
-    const message = protocolService.createRecordStopMessage(
-        selfInfo.value?.peerId ?? "unknown",
-    )
+    const message = protocolService.createRecordStopMessage(selfInfo.value?.peerId ?? 'unknown')
     broadcast(protocolService.serialize(message))
-    await stopLocalRecording(selfInfo.value?.peerId ?? "unknown")
-}
 
-function handleLeaveRoom(): void {
-    stopScreen()
-    for (const [deviceId] of activeMics.value) {
-        stopMic(deviceId)
-    }
-    leaveRoom()
-    resetRecording()
-    router.push("/")
+    // ルームの録画状態を停止
+    setRecordingState(RecordingState.STOPPED)
+
+    // ローカル録画も停止（実際に録画していなければ何もしない）
+    await stopLocalRecording(selfInfo.value?.peerId ?? 'unknown')
 }
 </script>
 
 <template>
-    <ConnectingScreen
-        v-if="connectionPhase !== 'connected'"
-        :room-id="roomIdString"
-        :phase="connectionPhase"
-        :error-message="errorMessage"
-        @connect="handleConnect"
-    />
+    <ConnectingScreen v-if="connectionPhase !== 'connected'" :room-id="roomIdString" :phase="connectionPhase"
+        :error-message="errorMessage" @connect="handleConnect" />
     <div v-else class="room-page">
         <TopBar :room-id="roomIdString" />
 
         <div class="room-page__body">
+            <div class="room-page__placeholder"></div>
             <aside class="room-page__sidebar">
-                <MyMediaPanel
-                    :is-screen-capturing="isScreenCapturing"
-                    :active-mics="activeMics"
-                    :audio-devices="audioDevices"
-                    @start-screen="startScreen"
-                    @stop-screen="stopScreen"
-                    @add-mic="handleAddMic"
-                    @remove-mic="handleRemoveMic"
-                />
+                <MyMediaPanel :is-screen-capturing="isScreenCapturing" :active-mics="activeMics"
+                    :audio-devices="audioDevices" @start-screen="startScreen" @stop-screen="stopScreen"
+                    @add-mic="handleAddMic" @remove-mic="handleRemoveMic" />
                 <ParticipantList :participants="peerParticipants" />
             </aside>
-
-            <main class="room-page__main">
-                <RecordingControl
-                    :recording-state="recordingState"
-                    :is-host="isHostRole"
-                    @start-recording="handleStartRecording"
-                    @stop-recording="handleStopRecording"
-                />
-
-                <button class="room-page__leave" @click="handleLeaveRoom">
-                    退出する
-                </button>
-            </main>
         </div>
+
+        <BottomControls :is-host="isHostRole" :room-id="roomIdString" @start-recording="handleStartRecording"
+            @stop-recording="handleStopRecording" />
     </div>
 </template>
 
@@ -174,13 +186,20 @@ function handleLeaveRoom(): void {
 .room-page {
     display: flex;
     flex-direction: column;
+    gap: 1em;
+
+    padding: 1em;
+
     min-height: 100vh;
 
     &__body {
         display: flex;
         flex: 1;
         gap: 16px;
-        padding: 16px;
+    }
+
+    &__placeholder {
+        flex: 1;
     }
 
     &__sidebar {
@@ -189,29 +208,6 @@ function handleLeaveRoom(): void {
         gap: 16px;
         width: 280px;
         flex-shrink: 0;
-    }
-
-    &__main {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
-        align-items: flex-start;
-    }
-
-    &__leave {
-        padding: 8px 16px;
-        border: 1px solid #e94560;
-        background: transparent;
-        color: #e94560;
-        border-radius: 8px;
-        cursor: pointer;
-        font-size: 0.8125rem;
-
-        &:hover {
-            background: #e94560;
-            color: #fff;
-        }
     }
 }
 </style>

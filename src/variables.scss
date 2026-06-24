@@ -1,0 +1,23 @@
+:root {
+  --color-panel: var(--color-surface);
+  --color-bg: #ffffff;
+  --color-fg: #202020;
+  --color-fg-muted: #6b7280;
+  --color-fg-dim: #9ca3af;
+  --color-surface: #f3f4f6;
+  --color-surface-alt: #e5e7eb;
+  --color-border: #d1d5db;
+  --color-danger: #e94560;
+  --color-danger-hover: #ff617b;
+  --color-success: #4ecca3;
+
+  @media (prefers-color-scheme: dark) {
+    --color-bg: #202020;
+    --color-fg: #f0f0f0;
+    --color-fg-muted: #aaa;
+    --color-fg-dim: #666;
+    --color-surface: #2b2b2b;
+    --color-surface-alt: #3b3b3b;
+    --color-border: #0f3460;
+  }
+}
