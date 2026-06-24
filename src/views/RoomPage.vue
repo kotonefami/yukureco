@@ -19,6 +19,7 @@ const router = useRouter()
 const protocolService = new ProtocolService()
 
 const {
+    isHost,
     selfInfo,
     participants: peerParticipants,
     leaveRoom,
@@ -58,6 +59,13 @@ const isHostRole = route.query.role === 'host' // TODO: この判別方法は問
 const connectionPhase = ref<ConnectionPhase>(route.query.role ? 'connecting' : 'pending')
 const errorMessage = ref('')
 
+const cleanupHandlers: (() => void)[] = []
+onUnmounted(() => {
+    for (const cleanup of cleanupHandlers) {
+        cleanup()
+    }
+})
+
 onMounted(async () => {
     if (isHostRole) {
         try {
@@ -82,40 +90,83 @@ onMounted(async () => {
 
     // 全参加者共通: DataChannel メッセージのルーティング
     if (connectionPhase.value === 'connected') {
-        const dataHandler = (data: unknown) => {
-            handleRecordStart(data)
-            handleRecordStop(data)
-        }
-        onDataMessage(dataHandler)
-
-        // ホストのみ: 新規参加者に録画状態を通知
-        let joinHandler: ((participant: Participant) => void) | undefined
-        if (isHostRole) {
-            joinHandler = (participant: Participant) => {
-                if (recordingState.value === RecordingState.RECORDING) {
-                    const message = protocolService.createRecordStartMessage(
-                        selfInfo.value?.peerId ?? 'unknown',
-                    )
-                    sendTo(participant.peerId, protocolService.serialize(message))
-                }
-            }
-            onParticipantJoin(joinHandler)
-        }
-
-        onUnmounted(() => {
-            offDataMessage(dataHandler)
-            if (isHostRole && joinHandler) {
-                offParticipantJoin(joinHandler)
-            }
-        })
+        setupMessageHandlers()
     }
 })
+
+let messageHandlersSetup = false
+
+/** アクティブなマイクの Map を構築します。 */
+function buildMicMap(): Map<string, { stream: MediaStream; label: string }> {
+    const micMap = new Map<string, { stream: MediaStream; label: string }>()
+    for (const [deviceId, info] of activeMics.value) {
+        micMap.set(deviceId, { stream: info.stream as MediaStream, label: info.label })
+    }
+    return micMap
+}
+
+/** DataChannel メッセージハンドラと参加者ハンドラをセットアップします。 */
+function setupMessageHandlers(): void {
+    if (messageHandlersSetup) return
+    messageHandlersSetup = true
+    const dataHandler = (data: unknown) => {
+        // SYNC_REQUEST: ホストのみ現在の録画状態を返信
+        try {
+            const message = protocolService.deserialize(data)
+            if (message.type === 'sync-request' && isHost.value) {
+                if (recordingState.value === RecordingState.RECORDING) {
+                    const msg = protocolService.createRecordStartMessage(
+                        selfInfo.value?.peerId ?? 'unknown',
+                    )
+                    sendTo(message.senderId, protocolService.serialize(msg))
+                } else {
+                    const msg = protocolService.createSyncResponseMessage(
+                        selfInfo.value?.peerId ?? 'unknown',
+                        recordingState.value === RecordingState.IDLE ? 'idle' : 'stopped',
+                    )
+                    sendTo(message.senderId, protocolService.serialize(msg))
+                }
+                return
+            }
+        } catch {
+            // 無視（パースできないメッセージは後続のハンドラに任せる）
+        }
+
+        // 録画開始/停止の処理（ストリームを渡す）
+        const micMap = buildMicMap()
+        handleRecordStart(data, screenStream.value ?? undefined, micMap)
+        handleRecordStop(data, selfInfo.value?.peerId)
+    }
+    onDataMessage(dataHandler)
+
+    // ホストのみ: 新規参加者に録画状態を通知
+    let joinHandler: ((participant: Participant) => void) | undefined
+    if (isHost.value) {
+        joinHandler = (participant: Participant) => {
+            if (recordingState.value === RecordingState.RECORDING) {
+                const message = protocolService.createRecordStartMessage(
+                    selfInfo.value?.peerId ?? 'unknown',
+                )
+                sendTo(participant.peerId, protocolService.serialize(message))
+            }
+        }
+        onParticipantJoin(joinHandler)
+    }
+
+    cleanupHandlers.push(() => {
+        offDataMessage(dataHandler)
+        if (joinHandler) {
+            offParticipantJoin(joinHandler)
+        }
+    })
+}
 
 async function handleConnect(displayName: string): Promise<void> {
     connectionPhase.value = 'connecting'
     try {
         await joinRoom(`yukureco-room-${roomIdString}`, displayName)
         connectionPhase.value = 'connected'
+        setupMessageHandlers()
     } catch (e) {
         connectionPhase.value = 'error'
         errorMessage.value = e instanceof Error ? e.message : String(e)
@@ -141,10 +192,7 @@ function handleStartRecording(): void {
 
     // 自分が画面を共有している場合のみローカル録画を開始
     if (screenStream.value) {
-        const micMap = new Map<string, { stream: MediaStream; label: string }>()
-        for (const [deviceId, info] of activeMics.value) {
-            micMap.set(deviceId, { stream: info.stream, label: info.label })
-        }
+        const micMap = buildMicMap()
         startLocalRecording(screenStream.value, micMap)
     }
 }
@@ -177,7 +225,7 @@ async function handleStopRecording(): Promise<void> {
             </aside>
         </div>
 
-        <BottomControls :is-host="isHostRole" :room-id="roomIdString" @start-recording="handleStartRecording"
+        <BottomControls :is-host="isHost" :room-id="roomIdString" @start-recording="handleStartRecording"
             @stop-recording="handleStopRecording" />
     </div>
 </template>

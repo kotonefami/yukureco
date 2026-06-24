@@ -16,24 +16,46 @@ const mediaService = new MediaService()
 
 /** 録画命令の受信・MediaRecorder 制御を管理するコンポーザブル */
 export function useRecording() {
-  /** DataChannel から受信した録画開始メッセージを処理します。 */
-  function handleRecordStart(data: unknown): void {
+  /**
+   * DataChannel から受信した録画開始メッセージを処理します。
+   * 画面ストリームが利用可能な場合は実際の録画も開始します。
+   * @param data 受信データ
+   * @param screenStream 画面ストリーム（省略時は状態変更のみ）
+   * @param micStreams マイクストリームのマップ（省略時は空）
+   */
+  function handleRecordStart(
+    data: unknown,
+    screenStream?: MediaStream,
+    micStreams?: Map<string, { stream: MediaStream; label: string }>,
+  ): void {
     try {
       const message = protocolService.deserialize(data)
       if (message.type === 'record-start') {
         recordingState.value = RecordingState.RECORDING
+        if (screenStream) {
+          const micMap = micStreams ?? new Map<string, { stream: MediaStream; label: string }>()
+          startRecording(screenStream, micMap)
+        }
       }
     } catch {
       // 無視
     }
   }
 
-  /** DataChannel から受信した録画停止メッセージを処理します。 */
-  function handleRecordStop(data: unknown): void {
+  /**
+   * DataChannel から受信した録画停止メッセージを処理します。
+   * peerId が指定されている場合は実際の録画も停止します。
+   * @param data 受信データ
+   * @param peerId 自分の Peer ID（省略時は状態変更のみ）
+   */
+  function handleRecordStop(data: unknown, peerId?: string): void {
     try {
       const message = protocolService.deserialize(data)
       if (message.type === 'record-stop') {
         recordingState.value = RecordingState.STOPPED
+        if (peerId) {
+          stopRecording(peerId)
+        }
       }
     } catch {
       // 無視

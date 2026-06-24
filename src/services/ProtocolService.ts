@@ -4,6 +4,10 @@ import type {
   RecordStartMessage,
   RecordStopMessage,
   ParticipantInfoMessage,
+  ParticipantJoinMessage,
+  ParticipantLeaveMessage,
+  SyncRequestMessage,
+  SyncResponseMessage,
 } from '@/types/protocol'
 
 /** DataChannel 上のプロトコルメッセージのシリアライズ・デシリアライズを行うクラス */
@@ -66,6 +70,54 @@ export class ProtocolService {
       timestamp: Date.now(),
       senderId,
       displayName,
+    }
+  }
+
+  /** 参加者参加通知メッセージを生成します。 */
+  public createParticipantJoinMessage(
+    senderId: string,
+    displayName: string,
+  ): ParticipantJoinMessage {
+    return {
+      type: MessageType.PARTICIPANT_JOIN,
+      timestamp: Date.now(),
+      senderId,
+      displayName,
+    }
+  }
+
+  /** 参加者退出通知メッセージを生成します。 */
+  public createParticipantLeaveMessage(
+    senderId: string,
+  ): ParticipantLeaveMessage {
+    return {
+      type: MessageType.PARTICIPANT_LEAVE,
+      timestamp: Date.now(),
+      senderId,
+    }
+  }
+
+  /** 状態同期要求メッセージを生成します。 */
+  public createSyncRequestMessage(
+    senderId: string,
+  ): SyncRequestMessage {
+    return {
+      type: MessageType.SYNC_REQUEST,
+      timestamp: Date.now(),
+      senderId,
+    }
+  }
+
+  /** 状態同期応答メッセージを生成します。 */
+  public createSyncResponseMessage(
+    senderId: string,
+    recordingState: "idle" | "recording" | "stopped",
+  ): SyncResponseMessage {
+    return {
+      type: MessageType.SYNC_RESPONSE,
+      timestamp: Date.now(),
+      senderId,
+      recordingState,
     }
   }
 }

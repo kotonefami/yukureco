@@ -74,50 +74,53 @@ export class PeerService {
 
     const peer = new Peer(`yukureco-room-${roomId}`)
 
-    peer.on('open', (id: string) => {
-      this.selfParticipant = {
-        peerId: id,
-        displayName: 'Host',
-        joinedAt: Date.now(),
-      }
-      this.setConnectionState(PeerConnectionState.CONNECTED)
-    })
-
-    peer.on('connection', (connection: DataConnection) => {
-      this.connections.set(connection.peer, connection)
-      this.setupDataChannel(connection)
-
-      const participant: Participant = {
-        peerId: connection.peer,
-        displayName: 'Guest',
-        joinedAt: Date.now(),
-      }
-      for (const handler of this.participantJoinHandlers) {
-        handler(participant)
-      }
-
-      connection.on('close', () => {
-        this.connections.delete(connection.peer)
-        for (const handler of this.participantLeaveHandlers) {
-          handler(connection.peer)
+    return new Promise((resolve, reject) => {
+      peer.on('open', (id: string) => {
+        this.selfParticipant = {
+          peerId: id,
+          displayName: 'Host',
+          joinedAt: Date.now(),
         }
+        this.setConnectionState(PeerConnectionState.CONNECTED)
+        resolve(peer)
       })
-    })
 
-    peer.on('call', (call: MediaConnection) => {
-      this.mediaConnections.set(call.peer, call)
-    })
+      peer.on('connection', (connection: DataConnection) => {
+        this.connections.set(connection.peer, connection)
+        this.setupDataChannel(connection)
 
-    peer.on('error', () => {
-      this.setConnectionState(PeerConnectionState.ERROR)
-    })
+        const participant: Participant = {
+          peerId: connection.peer,
+          displayName: 'Guest',
+          joinedAt: Date.now(),
+        }
+        for (const handler of this.participantJoinHandlers) {
+          handler(participant)
+        }
 
-    peer.on('disconnected', () => {
-      this.setConnectionState(PeerConnectionState.DISCONNECTED)
-    })
+        connection.on('close', () => {
+          this.connections.delete(connection.peer)
+          for (const handler of this.participantLeaveHandlers) {
+            handler(connection.peer)
+          }
+        })
+      })
 
-    this.peer = peer
-    return peer
+      peer.on('call', (call: MediaConnection) => {
+        this.mediaConnections.set(call.peer, call)
+      })
+
+      peer.on('error', (err) => {
+        this.setConnectionState(PeerConnectionState.ERROR)
+        reject(err)
+      })
+
+      peer.on('disconnected', () => {
+        this.setConnectionState(PeerConnectionState.DISCONNECTED)
+      })
+
+      this.peer = peer
+    })
   }
 
   /**
